@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.DS_Store
+Thumbs.db
+*.aux
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+.ipynb_checkpoints/
+# Course handout — do not publish
+Lab 1 Instructions.pdf
+
+lab1_data/full_handout.txt
+lab1_data/section5_handout_extract.txt

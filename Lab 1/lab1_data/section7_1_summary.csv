@@ -1,0 +1,2 @@
+disk_mass_g,j_disk_cad_kg_m2,j_rotor_kg_m2,omega_n_bare_rad_s,omega_n_loaded_rad_s,j_disk_identified_kg_m2,j_total_loaded_kg_m2,diff_vs_cad_percent
+72.4,6.235255692908265e-05,0.0001114095,31.399940941451554,42.78629202502234,-5.140682867757038e-05,6.000267132242962e-05,-182.44542198331737
