@@ -3,10 +3,8 @@
 Lab 1 §5.2 method: underdamped PD step → overshoot / rise time → ζ, ωn →
 J = kp_rad / ωn². Compare with your CAD prediction from Q2.4.
 
-Sequence:
-  1. Set gains (use an underdamped kp, small or zero kd so it rings)
-  2. Optional hold + disturb
-  3. Small position step, extract J
+Runs one small position step (no hand disturbance). Use underdamped PD
+(ki=0, small kd) so the response rings.
 
 Close tview before running.
 """
@@ -26,9 +24,9 @@ import pandas as pd
 MOTOR_ID = 1
 MAX_TORQUE_NM = 1.63
 
-# Underdamped PD for inertia ID (edit after tuning; kd≈0 so it rings).
-KP = 1.0
-KD = 0.0
+# Underdamped PD for inertia ID (ki=0; keep kd small so it rings).
+KP = 5
+KD = 0.03
 KI = 0.0
 ILIMIT = 0.0
 
@@ -36,9 +34,6 @@ STEP_REV = 0.01
 PRE_STEP_S = 0.5
 RUN_S = 3.0
 SAMPLE_DT_S = 0.005
-
-HOLD_DISTURB_S = 10.0
-PAUSE_BEFORE_STEP_S = 5.0
 
 # Q2.4 CAD mass-property inertia about the shaft axis [kg·m²].
 # Fill this in after you measure it in SolidWorks / CAD.
@@ -57,6 +52,8 @@ def apply_gains(kp, kd, ki, ilimit):
             f"conf set servo.pid_position.kd {kd}",
             f"conf set servo.pid_position.ki {ki}",
             f"conf set servo.pid_position.ilimit {ilimit}",
+            "conf set servopos.position_min nan",
+            "conf set servopos.position_max nan",
             "",
         ]),
         encoding="utf-8",
@@ -85,39 +82,6 @@ def apply_gains(kp, kd, ki, ilimit):
     if result.returncode != 0:
         raise RuntimeError("moteus_tool --write-config failed. Close tview and retry.")
     print(f"Gains set (RAM): kp={kp}, kd={kd}, ki={ki}, ilimit={ilimit}")
-
-
-async def hold_and_log(controller, duration_s, label="hold"):
-    first = await controller.query()
-    hold_position = first.values[moteus.Register.POSITION]
-    rows = []
-    start = time.perf_counter()
-    print(
-        f"{label}: holding {hold_position:.6f} rev "
-        f"({hold_position * 360:.2f} deg) for {duration_s:.0f} s — disturb by hand"
-    )
-    while True:
-        elapsed = time.perf_counter() - start
-        if elapsed >= duration_s:
-            break
-        result = await controller.set_position(
-            position=hold_position,
-            velocity=0.0,
-            kp_scale=1.0,
-            kd_scale=1.0,
-            ilimit_scale=1.0,
-            maximum_torque=MAX_TORQUE_NM,
-            query=True,
-        )
-        rows.append({
-            "phase": label,
-            "time_s": elapsed,
-            "command_rev": hold_position,
-            "position_rev": result.values[moteus.Register.POSITION],
-            "velocity_rev_s": result.values[moteus.Register.VELOCITY],
-        })
-        await asyncio.sleep(SAMPLE_DT_S)
-    return pd.DataFrame(rows), hold_position
 
 
 async def collect_step(controller):
@@ -263,36 +227,15 @@ def plot_step(data, start_position, target, metrics):
     plt.show()
 
 
-def plot_hold(data):
-    fig, ax = plt.subplots(figsize=(9, 4))
-    ax.plot(data["time_s"], data["command_rev"] * 360.0, label="Hold command")
-    ax.plot(data["time_s"], data["position_rev"] * 360.0, label="Measured")
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Position [deg]")
-    ax.set_title(f"Q6.2 Manual disturbance before step (kp={KP}, kd={KD})")
-    ax.grid(True)
-    ax.legend()
-    fig.tight_layout()
-    plt.show()
-
-
 async def main():
     print(f"Setting gains: kp={KP}, kd={KD}, ki={KI}, ilimit={ILIMIT}")
+    print("Inertia ID needs an underdamped step (ki=0, small kd).")
     if not np.isfinite(J_CAD_KG_M2):
         print("Tip: set J_CAD_KG_M2 from your Q2.4 CAD mass properties before comparing.")
     apply_gains(KP, KD, KI, ILIMIT)
 
     controller = moteus.Controller(id=MOTOR_ID)
     try:
-        hold_data, _ = await hold_and_log(controller, HOLD_DISTURB_S, label="hold")
-        hold_path = DATA_DIR / "section6_4_hold_disturbance.csv"
-        hold_data.to_csv(hold_path, index=False)
-        print("Saved:", hold_path)
-
-        await controller.set_stop()
-        print(f"Motor stopped. Waiting {PAUSE_BEFORE_STEP_S:.0f} s before step...")
-        await asyncio.sleep(PAUSE_BEFORE_STEP_S)
-
         step_data, start_position, target = await collect_step(controller)
     finally:
         await controller.set_stop()
@@ -301,8 +244,6 @@ async def main():
     step_path = DATA_DIR / "section6_4_step.csv"
     step_data.to_csv(step_path, index=False)
     print("Saved:", step_path)
-
-    plot_hold(hold_data)
 
     metrics = analyze_step(step_data, start_position, target)
     print("\n=== Q6.2 Step-response identification ===")

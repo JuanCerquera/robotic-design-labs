@@ -22,16 +22,16 @@ MOTOR_ID = 1
 MAX_TORQUE_NM = 1.63
 
 # Keep KP from your earlier tuning. Raise KD until overshoot is ~0.
-KP = 1.0
+KP = 7
 KD = 0.05
 KI = 0.0
 ILIMIT = 0.0
 
 STEP_REV = 0.05
 HOME_POSITION_REV = 0.0
-HOME_SETTLE_S = 4.0
+HOME_SETTLE_S = 3.0
 PRE_STEP_S = 0.5
-RUN_S = 3.0
+RUN_S = 1.0
 SAMPLE_DT_S = 0.005
 OVERSHOOT_EPS = 0.002
 

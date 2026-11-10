@@ -1,0 +1,2 @@
+kp,kd,e0_rev,overshoot_frac,overshoot_percent,rise_time_s,t_cross_s,y_peak_rev,y_ref_rev,y0_rev,y_ss_rev,ess_rev,Ie_rev_s,ki_suggest,ilimit_suggest_nm,reached_command,critically_damped
+7,0.05,0.05,-0.011840820312500056,0.0,,,0.052947998046875,0.0535400390625,0.0035400390625,0.05075320348083249,0.002786835581667514,,,0.0585235472150178,False,False

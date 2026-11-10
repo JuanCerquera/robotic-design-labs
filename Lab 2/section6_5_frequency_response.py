@@ -28,11 +28,11 @@ START_FREQUENCY_HZ = 0.5
 END_FREQUENCY_HZ = 100.0
 DURATION_S = 30.0
 
-# Settled gains from §6.1 tuning — edit after you finish section6_3.
-KP = 1.0
-KD = 0.05
-KI = 1.5
-ILIMIT = 0.01
+# Settled gains from §6.3 — edit if needed.
+KP = 5
+KD = 0.03
+KI = 7
+ILIMIT = 1
 
 FILENAME = "section6_5_chirp.csv"
 METRICS_NAME = "section6_5_metrics.csv"
@@ -55,6 +55,8 @@ def apply_gains(kp, kd, ki, ilimit):
             f"conf set servo.pid_position.ilimit {ilimit}",
             "conf set servo.default_accel_limit nan",
             "conf set servo.default_velocity_limit nan",
+            "conf set servopos.position_min nan",
+            "conf set servopos.position_max nan",
             "",
         ]),
         encoding="utf-8",
@@ -310,7 +312,7 @@ def analyze(data: pd.DataFrame):
 
 async def run_live(keep_gains: bool = False):
     print(f"Q6.3 using gains: kp={KP}, kd={KD}, ki={KI}, ilimit={ILIMIT}")
-    input("Close tview, then press Enter to apply gains and start the chirp...")
+    print("Close tview if open, then applying gains / starting chirp...")
     if keep_gains:
         print("Skipping moteus_tool (--keep-gains); using RAM gains as-is.")
     else:

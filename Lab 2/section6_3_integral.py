@@ -1,12 +1,12 @@
-"""Section 6.1 - Enable integral action and check windup recovery.
+"""Section 6.3 - Enable integral action; step + windup recovery tests.
 
-Uses critically-damped kp/kd from section6_2 plus ki/ilimit suggestions
-(defaults load from lab2_data/section6_2_metrics.csv).
+Uses critically-damped kp/kd from section6_2 plus your tuned ki/ilimit.
 
-Sequence mirrors Lab 1 §5.4:
-  1. Displace-and-release
-  2. Hold ~20 deg off, then release (chosen ilimit, then max)
-  3. Step response with integral on
+Automated sequence (no hand disturbance):
+  1. Step with chosen ilimit
+  2. Offset hold then return (chosen ilimit) — windup recovery
+  3. Offset hold then return (max ilimit) — compare windup
+  4. Final step with chosen ilimit
 
 Close tview before running.
 """
@@ -26,22 +26,20 @@ import pandas as pd
 MOTOR_ID = 1
 MAX_TORQUE_NM = 1.63
 
-# From section6_2 critical damping + ki/ilimit suggestions (edit if needed).
-KP = 1.0
-KD = 0.05
-KI = 1.5
-ILIMIT = 0.01
+# Tuned gains (edit if needed).
+KP = 5
+KD = 0.03
+KI = 7
+ILIMIT = 1
 
-DISPLACE_S = 8.0
 HOLD_OFFSET_S = 5.0
 RELEASE_SETTLE_S = 8.0
-HOME_SETTLE_S = 3.0
+HOME_SETTLE_S = 2.0
 PRE_STEP_S = 0.5
 STEP_REV = 0.05
+OFFSET_REV = 20.0 / 360.0  # ~20 deg
 STEP_RUN_S = 3.0
 SAMPLE_DT_S = 0.005
-HOME_POSITION_REV = 0.0
-PRE_HOLD_SETTLE_S = 1.5
 
 HERE = Path(__file__).resolve().parent
 DATA_DIR = HERE / "lab2_data"
@@ -59,7 +57,7 @@ def print_metrics_suggestions():
         f"  kp={row.get('kp')}, kd={row.get('kd')}, "
         f"ki≈{row.get('ki_suggest')}, ilimit≈{row.get('ilimit_suggest_nm')}"
     )
-    print("Edit KP/KD/KI/ILIMIT at top of this script if you want different values.")
+    print("Using KP/KD/KI/ILIMIT from top of this script.")
 
 
 def apply_gains(kp, kd, ki, ilimit):
@@ -72,6 +70,8 @@ def apply_gains(kp, kd, ki, ilimit):
             f"conf set servo.pid_position.ilimit {ilimit}",
             "conf set servo.default_accel_limit nan",
             "conf set servo.default_velocity_limit nan",
+            "conf set servopos.position_min nan",
+            "conf set servopos.position_max nan",
             "",
         ]),
         encoding="utf-8",
@@ -124,25 +124,27 @@ async def set_hold(controller, hold_position, ilimit_scale=1.0):
     )
 
 
-async def hold_and_log(
-    controller, hold_position, duration_s, phase, ilimit_scale=1.0, prompt=None
-):
-    if prompt:
-        print(prompt)
+async def command_and_log(controller, command_rev, duration_s, phase, ilimit_scale=1.0):
     rows = []
     start = time.perf_counter()
     while True:
         elapsed = time.perf_counter() - start
         if elapsed >= duration_s:
             break
-        result = await set_hold(controller, hold_position, ilimit_scale=ilimit_scale)
+        result = await set_hold(controller, command_rev, ilimit_scale=ilimit_scale)
+        fault = result.values.get(moteus.Register.FAULT, 0)
+        if fault:
+            raise RuntimeError(
+                f"Fault {fault} during '{phase}' at t={elapsed:.2f}s. "
+                "Run d stop in tview, clear servopos limits if fault 39, retry."
+            )
         rows.append({
             "phase": phase,
             "time_s": elapsed,
-            "command_rev": hold_position,
+            "command_rev": command_rev,
             "position_rev": result.values[moteus.Register.POSITION],
             "velocity_rev_s": result.values[moteus.Register.VELOCITY],
-            "command_deg": hold_position * 360.0,
+            "command_deg": command_rev * 360.0,
             "position_deg": result.values[moteus.Register.POSITION] * 360.0,
             "ilimit_scale": ilimit_scale,
             "ilimit_effective_nm": ilimit_scale * MAX_TORQUE_NM,
@@ -151,132 +153,57 @@ async def hold_and_log(
     return pd.DataFrame(rows)
 
 
-async def hold_during_input(controller, hold_position, prompt, ilimit_scale=1.0):
-    stop = asyncio.Event()
-
-    async def _hold_loop():
-        while not stop.is_set():
-            await set_hold(controller, hold_position, ilimit_scale=ilimit_scale)
-            await asyncio.sleep(SAMPLE_DT_S)
-
-    task = asyncio.create_task(_hold_loop())
-    try:
-        await asyncio.to_thread(input, prompt)
-    finally:
-        stop.set()
-        await task
-
-
-async def begin_hold(
-    controller, hold_position, ilimit_scale=1.0, settle_s=PRE_HOLD_SETTLE_S
-):
-    await clear_timeout(controller)
+async def run_step_from_current(controller, step_rev, ilimit_scale=1.0, settle_s=HOME_SETTLE_S):
+    first = await controller.query()
+    y0_cmd = float(first.values[moteus.Register.POSITION])
     print(
-        f"Establishing hold at {hold_position:.6f} rev "
-        f"({hold_position * 360:.1f} deg), "
-        f"ilimit_eff={ilimit_scale * MAX_TORQUE_NM:.4f} N·m..."
+        f"Settle at current ({y0_cmd:.6f} rev) for {settle_s:.1f} s, "
+        f"then step +{step_rev:.4f} rev"
     )
-    await hold_and_log(
-        controller,
-        hold_position,
-        settle_s,
-        phase="pre_hold_settle",
-        ilimit_scale=ilimit_scale,
+    pre = await command_and_log(
+        controller, y0_cmd, settle_s + PRE_STEP_S, phase="pre_step", ilimit_scale=ilimit_scale
     )
-
-
-async def hold_offset_then_release(controller, hold_position, phase, ilimit_scale):
-    await begin_hold(controller, hold_position, ilimit_scale=ilimit_scale)
-    print(
-        f"\n[{phase}] Holding target = {hold_position:.6f} rev "
-        f"({hold_position * 360:.1f} deg), "
-        f"ilimit_eff={ilimit_scale * MAX_TORQUE_NM:.4f} N·m."
+    y0 = float(pre["position_rev"].iloc[-1])
+    step_cmd = y0 + step_rev
+    print(f"Step to {step_cmd:.6f} (measured start={y0:.6f})")
+    step = await command_and_log(
+        controller, step_cmd, STEP_RUN_S, phase="step", ilimit_scale=ilimit_scale
     )
-    print(
-        f"When the 5 s timer starts: twist shaft ~20 deg off target, HOLD for "
-        f"{HOLD_OFFSET_S:.0f} s, then LET GO and watch it recover."
-    )
-    await hold_during_input(
-        controller,
-        hold_position,
-        "Press Enter to start the 5 s offset-hold timer (keep holding the shaft off)...",
-        ilimit_scale=ilimit_scale,
-    )
-
-    hold_rows = await hold_and_log(
-        controller,
-        hold_position,
-        HOLD_OFFSET_S,
-        phase=f"{phase}_hold",
-        ilimit_scale=ilimit_scale,
-        prompt=f"HOLD ~20 deg off NOW for {HOLD_OFFSET_S:.0f} s...",
-    )
-    print("Release the shaft NOW — logging recovery...")
-    release_rows = await hold_and_log(
-        controller,
-        hold_position,
-        RELEASE_SETTLE_S,
-        phase=f"{phase}_release",
-        ilimit_scale=ilimit_scale,
-    )
-    release_rows = release_rows.copy()
-    release_rows["time_s"] = release_rows["time_s"] + HOLD_OFFSET_S
-    return pd.concat([hold_rows, release_rows], ignore_index=True)
-
-
-async def run_step(controller, ilimit_scale=1.0):
-    hold_cmd = HOME_POSITION_REV
-    rows = []
-    start = time.perf_counter()
-    total_pre = HOME_SETTLE_S + PRE_STEP_S
-    print(f"\n[step] Homing/hold at {hold_cmd} for {total_pre:.1f} s, then step +{STEP_REV}")
-
-    while True:
-        elapsed = time.perf_counter() - start
-        if elapsed >= total_pre:
-            break
-        result = await set_hold(controller, hold_cmd, ilimit_scale=ilimit_scale)
-        rows.append({
-            "time_s": elapsed,
-            "command_rev": hold_cmd,
-            "position_rev": result.values[moteus.Register.POSITION],
-            "velocity_rev_s": result.values[moteus.Register.VELOCITY],
-        })
-        await asyncio.sleep(SAMPLE_DT_S)
-
-    y0 = float(rows[-1]["position_rev"])
-    step_cmd = y0 + STEP_REV
-    print(f"Step to {step_cmd:.6f} (start={y0:.6f})")
-
-    step_t0 = time.perf_counter()
-    while True:
-        elapsed_step = time.perf_counter() - step_t0
-        if elapsed_step >= STEP_RUN_S:
-            break
-        result = await controller.set_position(
-            position=step_cmd,
-            velocity=0.0,
-            kp_scale=1.0,
-            kd_scale=1.0,
-            ilimit_scale=ilimit_scale,
-            maximum_torque=MAX_TORQUE_NM,
-            query=True,
-        )
-        rows.append({
-            "time_s": total_pre + elapsed_step,
-            "command_rev": step_cmd,
-            "position_rev": result.values[moteus.Register.POSITION],
-            "velocity_rev_s": result.values[moteus.Register.VELOCITY],
-        })
-        await asyncio.sleep(SAMPLE_DT_S)
-
-    data = pd.DataFrame(rows)
-    data = data[data["time_s"] >= HOME_SETTLE_S].copy().reset_index(drop=True)
-    data["time_s"] = data["time_s"] - HOME_SETTLE_S
+    step = step.copy()
+    step["time_s"] = step["time_s"] + PRE_STEP_S
+    pre = pre.copy()
+    pre["time_s"] = pre["time_s"] - settle_s
+    data = pd.concat([pre[pre["time_s"] >= 0], step], ignore_index=True)
     return data, y0, step_cmd
 
 
-def plot_hold(data, title):
+async def offset_hold_then_return(controller, phase, ilimit_scale):
+    """Hold ~20 deg away to wind integral, then command back and watch recovery."""
+    first = await controller.query()
+    home = float(first.values[moteus.Register.POSITION])
+    offset_cmd = home + OFFSET_REV
+    print(
+        f"\n[{phase}] Move to offset {offset_cmd:.6f} rev "
+        f"(+{OFFSET_REV * 360:.1f} deg), hold {HOLD_OFFSET_S:.0f} s, "
+        f"then return (ilimit_eff={ilimit_scale * MAX_TORQUE_NM:.4f} N·m)"
+    )
+
+    await command_and_log(
+        controller, home, HOME_SETTLE_S, phase=f"{phase}_home", ilimit_scale=ilimit_scale
+    )
+    go = await command_and_log(
+        controller, offset_cmd, HOLD_OFFSET_S, phase=f"{phase}_hold", ilimit_scale=ilimit_scale
+    )
+    print("Commanding return to home — logging recovery...")
+    back = await command_and_log(
+        controller, home, RELEASE_SETTLE_S, phase=f"{phase}_release", ilimit_scale=ilimit_scale
+    )
+    back = back.copy()
+    back["time_s"] = back["time_s"] + HOLD_OFFSET_S
+    return pd.concat([go, back], ignore_index=True), home, offset_cmd
+
+
+def plot_traj(data, title):
     fig, ax = plt.subplots(figsize=(9, 4))
     ax.plot(data["time_s"], data["command_deg"], label="Command")
     ax.plot(data["time_s"], data["position_deg"], label="Measured")
@@ -317,85 +244,77 @@ async def main():
     print_metrics_suggestions()
     scale_chosen = ilimit_scale_for(ILIMIT)
     scale_max = 1.0
-    print("\n=== §6.1 integral gains (from top of script) ===")
+    print("\n=== §6.3 integral gains (from top of script) ===")
     print(f"kp={KP}, kd={KD}, ki={KI}")
     print(
         f"Configured ilimit={MAX_TORQUE_NM} N·m; "
         f"trial scales → chosen {ILIMIT} N·m (scale={scale_chosen:.4f}), "
         f"max {MAX_TORQUE_NM} N·m (scale=1)"
     )
-    input("Close tview, then press Enter to apply gains and start...")
+    print("Close tview if open, then applying gains...")
 
+    # Store max in config; scale per-command for chosen vs max comparison.
     apply_gains(KP, KD, KI, MAX_TORQUE_NM)
     controller = moteus.Controller(id=MOTOR_ID)
 
     try:
         await clear_timeout(controller)
-        first = await controller.query()
-        hold = float(first.values[moteus.Register.POSITION])
-        await begin_hold(controller, hold, ilimit_scale=scale_chosen)
-        print(
-            f"\n[1] Displace-and-release at {hold:.6f} rev. "
-            f"Gently displace and release a few times for {DISPLACE_S:.0f} s."
+
+        print("\n[1] Step with chosen ilimit")
+        step1, y0, y_cmd = await run_step_from_current(
+            controller, STEP_REV, ilimit_scale=scale_chosen
         )
-        await hold_during_input(
-            controller, hold, "Press Enter to start logging...", ilimit_scale=scale_chosen
-        )
-        displace = await hold_and_log(
-            controller,
-            hold,
-            DISPLACE_S,
-            phase="displace_release",
-            ilimit_scale=scale_chosen,
-        )
-        displace.to_csv(DATA_DIR / "section6_3_displace_release.csv", index=False)
-        print("Saved:", DATA_DIR / "section6_3_displace_release.csv")
-        ess_summary(displace, "After displace/release settle")
-        plot_hold(
-            displace,
-            f"§6.1 Displace-release (kp={KP}, kd={KD}, ki={KI}, ilimit={ILIMIT})",
+        step1.to_csv(DATA_DIR / "section6_3_step_ilimit.csv", index=False)
+        print("Saved:", DATA_DIR / "section6_3_step_ilimit.csv")
+        ess_summary(step1[step1["time_s"] >= PRE_STEP_S], "Step settle (chosen ilimit)")
+        plot_step(
+            step1,
+            y0,
+            y_cmd,
+            f"§6.3 Step (ki={KI}, ilimit={ILIMIT} N·m)",
         )
 
         await clear_timeout(controller)
-        first = await controller.query()
-        hold = float(first.values[moteus.Register.POSITION])
-        trial_a = await hold_offset_then_release(
-            controller, hold, phase=f"ilimit_{ILIMIT}", ilimit_scale=scale_chosen
+        trial_a, _, _ = await offset_hold_then_return(
+            controller, phase=f"ilimit_{ILIMIT}", ilimit_scale=scale_chosen
         )
         trial_a.to_csv(DATA_DIR / "section6_3_hold_release_ilimit.csv", index=False)
         print("Saved:", DATA_DIR / "section6_3_hold_release_ilimit.csv")
-        plot_hold(
-            trial_a,
-            f"§6.1 Hold-off then release (ilimit={ILIMIT} N·m)",
+        ess_summary(
+            trial_a[trial_a["phase"].str.endswith("_release")],
+            f"Recovery after offset (ilimit={ILIMIT})",
         )
+        plot_traj(trial_a, f"§6.3 Offset→return (ilimit={ILIMIT} N·m)")
 
         print(
             f"\nSwitching to ilimit={MAX_TORQUE_NM} N·m via ilimit_scale=1 "
-            "(no config rewrite; port stays open)..."
+            "(no config rewrite)..."
         )
         await clear_timeout(controller)
-        first = await controller.query()
-        hold = float(first.values[moteus.Register.POSITION])
-        trial_b = await hold_offset_then_release(
-            controller, hold, phase=f"ilimit_{MAX_TORQUE_NM}", ilimit_scale=scale_max
+        trial_b, _, _ = await offset_hold_then_return(
+            controller, phase=f"ilimit_{MAX_TORQUE_NM}", ilimit_scale=scale_max
         )
         trial_b.to_csv(DATA_DIR / "section6_3_hold_release_ilimit_max.csv", index=False)
         print("Saved:", DATA_DIR / "section6_3_hold_release_ilimit_max.csv")
-        plot_hold(
-            trial_b,
-            f"§6.1 Hold-off then release (ilimit={MAX_TORQUE_NM} N·m)",
+        ess_summary(
+            trial_b[trial_b["phase"].str.endswith("_release")],
+            f"Recovery after offset (ilimit={MAX_TORQUE_NM})",
         )
+        plot_traj(trial_b, f"§6.3 Offset→return (ilimit={MAX_TORQUE_NM} N·m)")
 
-        input("\nPress Enter to run the step response...")
+        print("\n[4] Final step with chosen ilimit")
         await clear_timeout(controller)
-        step, y0, y_cmd = await run_step(controller, ilimit_scale=scale_chosen)
+        step, y0, y_cmd = await run_step_from_current(
+            controller, STEP_REV, ilimit_scale=scale_chosen
+        )
         step.to_csv(DATA_DIR / "section6_3_step.csv", index=False)
         print("Saved:", DATA_DIR / "section6_3_step.csv")
+        ess_summary(step[step["time_s"] >= PRE_STEP_S], "Final step settle")
         plot_step(
             step,
             y0,
             y_cmd,
-            f"§6.1 Step with integral (kp={KP}, kd={KD}, ki={KI}, ilimit={ILIMIT})",
+            f"§6.3 Final step (kp={KP}, kd={KD}, ki={KI}, ilimit={ILIMIT})",
         )
 
         summary = pd.DataFrame([{
@@ -405,12 +324,14 @@ async def main():
             "ilimit_nm": ILIMIT,
             "ilimit_max_nm": MAX_TORQUE_NM,
             "ilimit_scale_chosen": scale_chosen,
+            "offset_rev": OFFSET_REV,
             "step_y0_rev": y0,
             "step_target_rev": y_cmd,
         }])
         summary.to_csv(DATA_DIR / "section6_3_summary.csv", index=False)
         print("Saved:", DATA_DIR / "section6_3_summary.csv")
-        print("\nCopy final kp/kd/ki/ilimit into section6_4 and section6_5.")
+        print("\nCompare chosen vs max ilimit recovery plots for windup.")
+        print("Copy final kp/kd/ki/ilimit into section6_4 and section6_5.")
     finally:
         await controller.set_stop()
         print("Motor stopped")

@@ -1,8 +1,10 @@
-"""Section 6.1 - Hold a position (kp-only) while you disturb the shaft by hand.
+"""Section 6.1 - Tune kp with a small position step (kd = ki = 0).
 
-Lab 1 §5.1 procedure: set kd=ki=0, raise kp until unstable, then back off.
+Lab 1 §5.1 idea, but a step is used instead of a hand disturbance — the RI60
+hold is too stiff to nudge by hand once kp is useful.
 
-Edit KP below. Close tview before running. Peak torque capped at 1.63 N·m.
+Edit KP below. Raise until the step rings / goes unstable, then back off ~30–50%.
+Close tview before running. Peak torque capped at 1.63 N·m.
 """
 
 import asyncio
@@ -17,17 +19,19 @@ import pandas as pd
 
 
 MOTOR_ID = 1
-MAX_TORQUE_NM = 1.63  # RI60 peak; keep RMS ≤ 0.57 N·m by hand
+MAX_TORQUE_NM = 1.63  # RI60 peak; keep RMS ≤ 0.57 N·m
 
 # Edit these gains (start with kd = ki = 0).
-KP = 1.0
+KP = 17.5
 KD = 0.0
 KI = 0.0
 ILIMIT = 0.0
 
-DURATION_S = 30.0
+STEP_REV = 0.05
+PRE_STEP_S = 0.5
+RUN_S = 3.0
 SAMPLE_DT_S = 0.005
-FILENAME = "section6_1_hold_disturbance.csv"
+FILENAME = "section6_1_step.csv"
 
 HERE = Path(__file__).resolve().parent
 DATA_DIR = HERE / "lab2_data"
@@ -74,62 +78,75 @@ def apply_gains(kp, kd, ki, ilimit):
     print(f"Gains set (RAM): kp={kp}, kd={kd}, ki={ki}, ilimit={ilimit}")
 
 
-async def main():
-    print(f"Setting gains in script: kp={KP}, kd={KD}, ki={KI}, ilimit={ILIMIT}")
-    print("Procedure: double kp until unstable, then back off ~30–50%.")
-    apply_gains(KP, KD, KI, ILIMIT)
-
-    controller = moteus.Controller(id=MOTOR_ID)
+async def run_step(controller):
     first = await controller.query()
-    hold_position = first.values[moteus.Register.POSITION]
-    print(f"Holding position = {hold_position:.6f} rev  ({hold_position * 360:.2f} deg)")
-    print(f"Disturb the shaft by hand for {DURATION_S:.0f} s — logging now...")
+    start_position = float(first.values[moteus.Register.POSITION])
+    hold_cmd = start_position
+    step_cmd = start_position + STEP_REV
+    print(f"Start = {start_position:.6f} rev  ({start_position * 360:.2f} deg)")
+    print(f"Hold {PRE_STEP_S:.1f} s, then step +{STEP_REV} rev → {step_cmd:.6f}")
 
     rows = []
     start = time.perf_counter()
-    try:
-        while True:
-            elapsed = time.perf_counter() - start
-            if elapsed >= DURATION_S:
-                break
+    while True:
+        elapsed = time.perf_counter() - start
+        if elapsed >= PRE_STEP_S + RUN_S:
+            break
+        cmd = hold_cmd if elapsed < PRE_STEP_S else step_cmd
+        result = await controller.set_position(
+            position=cmd,
+            velocity=0.0,
+            kp_scale=1.0,
+            kd_scale=1.0,
+            ilimit_scale=1.0,
+            maximum_torque=MAX_TORQUE_NM,
+            query=True,
+        )
+        rows.append({
+            "time_s": elapsed,
+            "command_rev": cmd,
+            "position_rev": result.values[moteus.Register.POSITION],
+            "velocity_rev_s": result.values[moteus.Register.VELOCITY],
+            "command_deg": cmd * 360.0,
+            "position_deg": result.values[moteus.Register.POSITION] * 360.0,
+            "kp": KP,
+            "kd": KD,
+            "ki": KI,
+        })
+        await asyncio.sleep(SAMPLE_DT_S)
 
-            result = await controller.set_position(
-                position=hold_position,
-                velocity=0.0,
-                kp_scale=1.0,
-                kd_scale=1.0,
-                ilimit_scale=1.0,
-                maximum_torque=MAX_TORQUE_NM,
-                query=True,
-            )
-            rows.append({
-                "time_s": elapsed,
-                "command_rev": hold_position,
-                "position_rev": result.values[moteus.Register.POSITION],
-                "velocity_rev_s": result.values[moteus.Register.VELOCITY],
-                "command_deg": hold_position * 360.0,
-                "position_deg": result.values[moteus.Register.POSITION] * 360.0,
-                "kp": KP,
-                "kd": KD,
-                "ki": KI,
-            })
-            await asyncio.sleep(SAMPLE_DT_S)
+    return pd.DataFrame(rows), start_position, step_cmd
+
+
+async def main():
+    print(f"Setting gains in script: kp={KP}, kd={KD}, ki={KI}, ilimit={ILIMIT}")
+    print("Procedure: raise kp until the step rings / goes unstable, then back off ~30–50%.")
+    apply_gains(KP, KD, KI, ILIMIT)
+
+    controller = moteus.Controller(id=MOTOR_ID)
+    try:
+        data, start_position, step_cmd = await run_step(controller)
     finally:
         await controller.set_stop()
         print("Motor stopped")
 
-    data = pd.DataFrame(rows)
     csv_path = DATA_DIR / FILENAME
     data.to_csv(csv_path, index=False)
     print("Saved:", csv_path)
     print(f"Samples: {len(data)}")
+    print("Look for ringing / sustained oscillation → kp too high.")
+    print("Next: copy your settled KP into section6_2_critical_damping.py")
+
+    pos_rel_deg = (data["position_rev"] - start_position) * 360.0
+    cmd_rel_deg = (data["command_rev"] - start_position) * 360.0
 
     plt.figure(figsize=(9, 4))
-    plt.plot(data["time_s"], data["command_deg"], label="Hold command")
-    plt.plot(data["time_s"], data["position_deg"], label="Measured")
+    plt.plot(data["time_s"], cmd_rel_deg, label="Command")
+    plt.plot(data["time_s"], pos_rel_deg, label="Measured")
+    plt.axvline(PRE_STEP_S, color="0.5", linestyle=":", label="Step")
     plt.xlabel("Time [s]")
-    plt.ylabel("Position [deg]")
-    plt.title(f"§6.1 Manual disturbance (kp={KP}, kd={KD}, ki={KI})")
+    plt.ylabel("Position relative to start [deg]")
+    plt.title(f"§6.1 Step (kp={KP}, kd={KD}, ki={KI})")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()

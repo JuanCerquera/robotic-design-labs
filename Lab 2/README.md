@@ -6,7 +6,7 @@ Lab 1: edit gains at the top of each script, close tview, then run.
 ## Setup
 
 ```bash
-pip install moteus matplotlib pandas numpy scipy
+pip install moteus moteus_gui matplotlib pandas numpy scipy
 ```
 
 Bolt the actuator to the test stand and clamp the stand before powering.
@@ -44,9 +44,9 @@ python section5_2_kt_comparison.py # Q5.2 Kt + vs mj5208 from Lab 1
 Edit `KP` / `KD` / `KI` / `ILIMIT` at the top of each file.
 
 ```bash
-python section6_1_tune_kp.py            # kp only, disturb by hand
+python section6_1_tune_kp.py            # kp only, small position step
 python section6_2_critical_damping.py   # raise kd until critically damped
-python section6_3_integral.py           # set ki / ilimit, check windup
+python section6_3_integral.py           # set ki / ilimit, step + windup
 ```
 
 ### 6. Characterization

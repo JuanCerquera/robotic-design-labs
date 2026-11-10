@@ -1,0 +1,2 @@
+kp,kd,ki,ilimit,sample_rate_hz,reference_db,bandwidth_hz,peak_search_lo_hz,peak_search_hi_hz,peak_db,peak_rel_db,f_peak_hz,Mr,mj5208_bandwidth_hz,diff_vs_mj5208_percent
+5,0.03,7,1,531.700224040075,-13.14680871781001,5.200980370595166,5.0,40.0,-15.825380704369694,-2.6785719865596835,5.067621899554264,0.734634636661747,33.34,-84.40017885244401
