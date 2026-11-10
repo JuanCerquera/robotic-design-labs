@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.DS_Store
+Thumbs.db
+*.aux
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+.ipynb_checkpoints/
+# Course handout — do not publish
+Lab 2 Instructions.pdf
+*.pdf
+!Plots/**
